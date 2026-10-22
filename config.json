@@ -1,0 +1,99 @@
+{
+  "version": "1.0",
+  "updated": "2026-08-29",
+  "niche": {
+    "label": "physiotherapy",
+    "searchTerms": [
+      "physiotherapy clinic",
+      "physiotherapist",
+      "sports physiotherapy",
+      "sports injury clinic"
+    ],
+    "excludeNamePatterns": [
+      "NHS",
+      "hospital",
+      "university",
+      "Nuffield",
+      "Bupa",
+      "Spire",
+      "Surgery",
+      "Health Centre",
+      "Medical Centre",
+      "Medical Practice",
+      "Podiatry",
+      "Ascenti",
+      "The Gym Group",
+      "PureGym",
+      "David Lloyd",
+      "Six Physio",
+      "Vita Health"
+    ]
+  },
+  "geography": {
+    "uk": {
+      "enabled": true,
+      "cities": [
+        "Manchester",
+        "Leeds",
+        "Bristol",
+        "Sheffield",
+        "Nottingham",
+        "Leicester",
+        "Newcastle upon Tyne",
+        "Cardiff",
+        "Edinburgh",
+        "Glasgow"
+      ]
+    },
+    "ie": {
+      "enabled": false,
+      "cities": ["Dublin", "Cork", "Galway", "Limerick"]
+    }
+  },
+  "harvest": {
+    "actorId": "compass/crawler-google-places",
+    "maxPlacesPerCity": 40,
+    "maxPlacesPerCityNote": "Total cap (actor maxCrawledPlaces), not per search term",
+    "maxReviewsPerPlace": 20,
+    "citiesPerRun": 1,
+    "language": "en"
+  },
+  "email": {
+    "patterns": ["{first}@{domain}", "{first}.{last}@{domain}", "{f}{last}@{domain}", "{first}{last}@{domain}"],
+    "scrapePaths": ["/", "/contact", "/contact-us"]
+  },
+  "verification": {
+    "enabled": true,
+    "provider": "millionverifier"
+  },
+  "classifier": {
+    "model": "claude-haiku-4-5-20251001",
+    "maxTokens": 1024,
+    "batchSize": 25,
+    "evidenceRequired": true,
+    "rubric": {
+      "hot": "Classify HOT only when review text contains first-hand phone or booking friction: patients saying they could not get through, phone rings out or goes unanswered, nobody called back, voicemail full or not returned, on hold too long, had to chase repeatedly to book, could not reschedule or cancel by phone, booking system down or ignored. Owner replies apologising for missed calls or slow responses also count. The complaint must be operational (access, phones, booking admin), not clinical. Every HOT verdict must quote the exact sentence(s) from the review as evidence, verbatim, with reviewer date if present.",
+      "warm": "Classify WARM when there is no phone/booking complaint but the clinic shows presence failures the offer fixes: no website or a dead link, very few or very old reviews compared with same-city clinics, unanswered negative reviews, Google profile missing hours or photos, no visible online booking route. WARM verdicts cite the specific failure(s) observed, not a general impression.",
+      "discard": "Classify DISCARD for: multi-site chains and franchises, hospital or NHS or university listings, GP surgeries and NHS health centres and general medical practices (in UK naming, 'X Surgery', 'Health Centre' or 'Medical Centre' is almost always a GP practice, not a physiotherapy clinic - DISCARD these regardless of complaint evidence), clinics whose reviews repeatedly praise responsiveness and easy booking, review sets that only contain clinical-quality complaints, businesses that are not actually physiotherapy or allied clinics, and listings with no reviews AND no other signal to act on. When uncertain between WARM and DISCARD: keep the lead as WARM if there is at least one concrete, citable presence failure (dead website, stale or sparse reviews, unanswered negatives, missing profile basics); DISCARD if the doubt comes from having no signal at all. Never pad the list with zero-evidence leads, but do not bin a lead that has something specific to say in an email."
+    }
+  },
+  "presenceSignals": {
+    "reviewVelocityWindowDays": 180,
+    "lowVelocityFractionOfCityMedian": 0.35,
+    "websiteCheckTimeoutSeconds": 15
+  },
+  "routing": {
+    "companiesHouse": {
+      "enabled": true,
+      "matchTypes": ["ltd", "llp"],
+      "requireActiveStatus": true
+    },
+    "croIe": {
+      "enabled": false
+    },
+    "defaultRouteOnNoMatch": "DM"
+  },
+  "throughput": {
+    "targetScoredLeadsPerDay": 20
+  }
+}

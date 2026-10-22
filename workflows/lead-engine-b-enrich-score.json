@@ -1,0 +1,1193 @@
+{
+  "name": "Lead Engine B — Enrich & Score",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "mt",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_CONFIG_TABLE_ID"
+        },
+        "returnAll": true
+      },
+      "id": "rc",
+      "name": "Read config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows=$input.all().map(i=>i.json);\nconst raw={};\nfor(const r of rows){ if(r&&r.key!=null) raw[r.key]=r.value; }\nfunction arr(v){ try{ const p=JSON.parse(v); return Array.isArray(p)?p:[]; }catch(e){ return []; } }\nfunction num(v,d){ const n=parseFloat(v); return isNaN(n)?d:n; }\nconst config={\n  niche:{ searchTerms:arr(raw['niche.searchTerms']), excludeNamePatterns:arr(raw['niche.excludeNamePatterns']) },\n  classifier:{ model: raw['classifier.model']||'claude-haiku-4-5-20251001', maxTokens:num(raw['classifier.maxTokens'],1024), batchSize:num(raw['classifier.batchSize'],25), rubric:{ hot:raw['classifier.rubric.hot']||'', warm:raw['classifier.rubric.warm']||'', discard:raw['classifier.rubric.discard']||'' } },\n  presence:{ reviewVelocityWindowDays:num(raw['presence.reviewVelocityWindowDays'],180), lowVelocityFractionOfCityMedian:num(raw['presence.lowVelocityFractionOfCityMedian'],0.35) },\n  routing:{ defaultRouteOnNoMatch: raw['routing.defaultRouteOnNoMatch']||'DM' },\n  email:{ patterns:arr(raw['email.patterns']), scrapePaths:arr(raw['email.scrapePaths']) },\n  verification:{ enabled:(raw['verification.enabled']==='true') }\n};\nreturn [{ json:{ config } }];"
+      },
+      "id": "pc",
+      "name": "Parse config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_LEADS_TABLE_ID"
+        },
+        "returnAll": true
+      },
+      "id": "ral",
+      "name": "Read all leads",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        320
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_LEADS_TABLE_ID"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "status",
+              "keyValue": "raw"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "rrl",
+      "name": "Read raw leads",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        960,
+        320
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg=$('Parse config').first().json.config;\nconst size=(cfg&&cfg.classifier&&cfg.classifier.batchSize)?cfg.classifier.batchSize:25;\nreturn $input.all().slice(0,size);"
+      },
+      "id": "cb",
+      "name": "Cap batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg=$('Parse config').first().json.config;\nconst windowDays=cfg.presence.reviewVelocityWindowDays||180;\nconst lowFrac=cfg.presence.lowVelocityFractionOfCityMedian||0.35;\nconst now=Date.now();\nconst windowMs=windowDays*86400000;\nfunction recentCount(reviewsJson){ let arr=[]; try{ arr=JSON.parse(reviewsJson||'[]'); }catch(e){ arr=[]; } let c=0; for(const r of arr){ const d=Date.parse(r&&r.date); if(!isNaN(d)&&(now-d)<=windowMs) c++; } return c; }\nlet allRows=[]; try{ allRows=$('Read all leads').all().map(i=>i.json); }catch(e){ allRows=[]; }\nif(!allRows.length){ allRows=$input.all().map(i=>i.json); }\nconst byCity={};\nfor(const row of allRows){ const city=row.city||''; if(!byCity[city]) byCity[city]=[]; byCity[city].push(recentCount(row.reviews_json)); }\nfunction median(a){ if(!a.length) return 0; const s=[...a].sort((x,y)=>x-y); const m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }\nconst medianByCity={}; for(const c in byCity){ medianByCity[c]=median(byCity[c]); }\nconst out=[];\nfor(const item of $input.all()){\n  const row=item.json;\n  let reviews=[]; try{ reviews=JSON.parse(row.reviews_json||'[]'); }catch(e){ reviews=[]; }\n  let sig={}; try{ sig=JSON.parse(row.signals||'{}'); }catch(e){ sig={}; }\n  const recentReviews=recentCount(row.reviews_json);\n  const cityMedianRecent=medianByCity[row.city||'']||0;\n  const facts={ hasWebsite:!!row.website, bookingLinksCount:Array.isArray(sig.bookingLinks)?sig.bookingLinks.length:0, claimed:sig.claimed===true, imagesCount:sig.imagesCount||0, hasHours:sig.hasHours===true, recentReviews, cityMedianRecent, lowVelocity:recentReviews<(cityMedianRecent*lowFrac), reviewCount:row.review_count||0, rating:row.rating||0, latestReviewDate:row.latest_review_date||'' };\n  out.push({ json:{ ...row, reviewsParsed:reviews, facts } });\n}\nreturn out;"
+      },
+      "id": "cf",
+      "name": "Compute facts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c_has_site",
+              "leftValue": "={{ $json.facts.hasWebsite }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "hw",
+      "name": "Has website?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg=$('Parse config').first().json.config;\nlet paths=(cfg.email&&Array.isArray(cfg.email.scrapePaths)&&cfg.email.scrapePaths.length)?cfg.email.scrapePaths.slice():['/'];\nif(paths.indexOf('/')<0) paths=['/'].concat(paths);\nconst out=[];\nfor(const item of $input.all()){\n  const row=item.json;\n  let origin='';\n  { const w=String(row.website||'').trim(); const wp=w?(/^https?:\\/\\//i.test(w)?w:('https://'+w)):''; const m=wp.match(/^(https?:\\/\\/[^\\/?#]+)/i); origin=m?m[1]:''; }\n  const seen={}; let count=0;\n  for(const p of paths){\n    if(!origin) break;\n    let full;\n    full=origin+(String(p).startsWith('/')?String(p):'/'+String(p));\n    if(seen[full]) continue; seen[full]=true;\n    const isRoot=(full===origin+'/');\n    out.push({ json:{ place_id:row.place_id, _fetchUrl:full, _isRoot:isRoot, _lead:row } });\n    count++;\n  }\n  if(!count){ out.push({ json:{ place_id:row.place_id, _fetchUrl:origin?origin+'/':'https://invalid.invalid/', _isRoot:true, _lead:row } }); }\n}\nreturn out;"
+      },
+      "id": "ex",
+      "name": "Expand fetch targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json._fetchUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-GB,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "fsp",
+      "name": "Fetch site pages",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        208
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputs=$('Expand fetch targets').all();\nconst responses=$input.all();\nconst EXCLUDES=['example.','sentry','wix','wordpress','.png','.jpg','.webp','@2x','cloudflare','godaddy','user@domain','@domain.com','yourname','yourdomain','your@','name@email','email@address','noreply','no-reply','donotreply','placeholder','schema.org','@example','test@test','filler@'];\nfunction extract(html){\n  if(!html||typeof html!=='string') return [];\n  const found={};\n  const mailtoRx=/mailto:([^\\s'>]+)/gi; let m;\n  while((m=mailtoRx.exec(html))){ found[m[1]]=true; }\n  const rx=/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi; let g;\n  while((g=rx.exec(html))){ found[g[0]]=true; }\n  const clean=[];\n  for(let e of Object.keys(found)){ e=String(e).toLowerCase().trim().split('?')[0]; e=e.replace(/^[^a-z0-9]+/,'').replace(/[^a-z]+$/,''); if(!e) continue; if(!/^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$/.test(e)) continue; if(EXCLUDES.some(x=>e.indexOf(x)>=0)) continue; if(clean.indexOf(e)<0) clean.push(e); }\n  return clean;\n}\nfunction extractSocials(html){ if(!html||typeof html!=='string') return []; const out=[]; const rx=/https?:\\/\\/(?:www\\.)?(?:facebook\\.com|instagram\\.com|linkedin\\.com|x\\.com|twitter\\.com|tiktok\\.com)\\/[A-Za-z0-9_.\\/-]+/gi; let m; while((m=rx.exec(html))){ let u=m[0].replace(/[\\/.,)]+$/,''); const lo=u.toLowerCase(); if(/sharer|\\/share|intent|\\/plugins|\\/dialog|\\/login|\\/hashtag|\\/p\\/|\\/reel|\\/posts\\/|\\/photo|\\/watch|\\/status\\/|\\/2008\\/|profile\\.php/.test(lo)) continue; if(/facebook\\.com\\/tr$/.test(lo)) continue; if(out.indexOf(u)<0) out.push(u); if(out.length>=8) break; } return out; }\nconst groups={};\nfor(let i=0;i<inputs.length;i++){\n  const meta=inputs[i].json; const resp=responses[i]?responses[i].json:null; const pid=meta.place_id;\n  if(!groups[pid]) groups[pid]={ lead:meta._lead, alive:false, emails:[], socials:[] };\n  let status=null, body='';\n  if(resp&&typeof resp==='object'){ if(typeof resp.statusCode==='number') status=resp.statusCode; const rawBody=(resp.data!=null)?resp.data:resp.body; if(rawBody!=null) body=(typeof rawBody==='string')?rawBody:JSON.stringify(rawBody); }\n  else if(typeof resp==='string'){ body=resp; }\n  const ok=(status!=null&&status>=200&&status<400);\n  if(ok) groups[pid].alive=true;\n  if(ok){ for(const e of extract(body)){ if(groups[pid].emails.indexOf(e)<0) groups[pid].emails.push(e); } for(const s of extractSocials(body)){ if(groups[pid].socials.indexOf(s)<0) groups[pid].socials.push(s); } }\n}\nconst out=[];\nfor(const pid in groups){ const g=groups[pid]; out.push({ json:{ ...g.lead, websiteAlive:g.alive, scrapedEmails:g.emails, socialLinks:g.socials } }); }\nreturn out;"
+      },
+      "id": "agg",
+      "name": "Aggregate site data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(i=>({ json:{ ...i.json, websiteAlive:false, scrapedEmails:[], socialLinks:[] } }));"
+      },
+      "id": "nwd",
+      "name": "No website defaults",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfg=$('Parse config').first().json.config;\nconst c=cfg.classifier;\nconst q=String.fromCharCode(34);\nconst shape='{'+q+'classification'+q+':'+q+'HOT'+q+'|'+q+'WARM'+q+'|'+q+'DISCARD'+q+','+q+'evidence'+q+':[{'+q+'quote'+q+':'+q+'...'+q+','+q+'date'+q+':'+q+'...'+q+','+q+'source'+q+':'+q+'review'+q+'|'+q+'owner_response'+q+'}],'+q+'reasons'+q+':'+q+'one sentence'+q+'}';\nconst sys='You classify UK physiotherapy clinic leads for a booking-recovery agency. Apply the three rubrics exactly. Rubric HOT: '+(c.rubric.hot||'')+' Rubric WARM: '+(c.rubric.warm||'')+' Rubric DISCARD: '+(c.rubric.discard||'')+' Respond with STRICT JSON only, no prose, matching: '+shape+'. Evidence quotes MUST be copied verbatim from the supplied review texts or owner responses. HOT without at least one verbatim quote is invalid - use WARM or DISCARD instead. Never place a double-quote character inside any JSON string value; for WARM verdicts based on facts, phrase the quote as a short plain-English description with no quotation marks.';\nconst out=[];\nfor(const item of $input.all()){\n  const row=item.json;\n  const reviews=(row.reviewsParsed||[]).map(r=>({ text:r.text, date:r.date, stars:r.stars, ownerResponse:r.ownerResponse, ownerResponseDate:r.ownerResponseDate }));\n  const userMsg='Classify this clinic lead.\\nName: '+(row.name||'')+'\\nCity: '+(row.city||'')+'\\nFacts (JSON): '+JSON.stringify(Object.assign({},row.facts||{},{websiteAlive:row.websiteAlive===true,scrapedEmailsFound:(Array.isArray(row.scrapedEmails)?row.scrapedEmails.length:0)}))+'\\nReviews (JSON array): '+JSON.stringify(reviews);\n  const body={ model:c.model, max_tokens:c.maxTokens, temperature:0, system:sys, messages:[{ role:'user', content:userMsg }] };\n  out.push({ json:{ ...row, classifierBody:JSON.stringify(body) } });\n}\nreturn out;"
+      },
+      "id": "bcr",
+      "name": "Build classifier request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "anthropicApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.classifierBody }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 60000
+        }
+      },
+      "id": "cla",
+      "name": "Classify (Anthropic)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2880,
+        320
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Anthropic (lead engine)"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const src=$('Build classifier request').all();\nconst responses=$input.all();\nfunction norm(s){ return String(s||'').replace(/\\s+/g,' ').trim().toLowerCase(); }\nconst out=[];\nfor(let i=0;i<responses.length;i++){\n  const row=src[i]?src[i].json:{};\n  const resp=responses[i]?responses[i].json:{};\n  let text='';\n  try{ if(resp&&Array.isArray(resp.content)){ text=resp.content.map(b=>(b&&b.text)?b.text:'').join('').trim(); } }catch(e){}\n  let verdict=null;\n  if(text){ let t=text.trim(); if(t.indexOf('```')===0){ t=t.replace(/^```(?:json)?/i,'').replace(/```$/,'').trim(); } try{ verdict=JSON.parse(t); }catch(e){ const m=t.match(/\"classification\"\\s*:\\s*\"(HOT|WARM|DISCARD)\"/i); if(m){ verdict={ classification:m[1].toUpperCase(), evidence:[], reasons:'[salvaged: model emitted invalid JSON]' }; } else { verdict=null; } } }\n  let classification, evidence, reasons;\n  if(!verdict||typeof verdict!=='object'){ classification='ERROR'; reasons=String(text||JSON.stringify(resp)).slice(0,300); evidence=[]; }\n  else{ classification=String(verdict.classification||'ERROR').toUpperCase(); evidence=Array.isArray(verdict.evidence)?verdict.evidence:[]; reasons=String(verdict.reasons||''); }\n  const reviews=row.reviewsParsed||[];\n  const parts=[];\n  for(const r of reviews){ if(r&&r.text) parts.push(norm(r.text)); if(r&&r.ownerResponse) parts.push(norm(r.ownerResponse)); }\n  const corpus=parts.join(' | ');\n  if(classification==='HOT'){ const kept=evidence.filter(ev=>ev&&ev.quote&&corpus.indexOf(norm(ev.quote))>=0); evidence=kept; if(!kept.length){ classification='WARM'; reasons=reasons+' [downgraded: hot_without_verbatim_evidence]'; } }\n  out.push({ json:{ ...row, classification, evidence, reasons } });\n}\nreturn out;"
+      },
+      "id": "pv",
+      "name": "Parse verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c_hot",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "HOT",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c_warm",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "WARM",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "hworw",
+      "name": "HOT or WARM?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3360,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all();"
+      },
+      "id": "hwl",
+      "name": "HW leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.company-information.service.gov.uk/search/companies?q=' + encodeURIComponent($json.name) + '&items_per_page=5' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "chs",
+      "name": "CH search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3840,
+        320
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Companies House (lead engine)"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const lead=$('HW leads').item.json;\nconst resp=$json;\nconst items=(resp&&Array.isArray(resp.items))?resp.items:[];\nconst STOP=['ltd','limited','llp','physiotherapy','physio','clinic','the','and'];\nfunction toks(s){ return String(s||'').toLowerCase().replace(/[^a-z0-9\\s]/g,' ').split(/\\s+/).filter(t=>t&&STOP.indexOf(t)<0); }\nconst nameToks=toks(lead.name);\nconst nameSet={}; for(const t of nameToks) nameSet[t]=true;\nconst nameKeys=Object.keys(nameSet);\nfunction overlap(title){ const tt=toks(title); if(!tt.length||!nameKeys.length) return 0; const ts={}; for(const t of tt) ts[t]=true; const tKeys=Object.keys(ts); let inter=0; for(const t of nameKeys){ if(ts[t]) inter++; } const denom=Math.max(nameKeys.length,tKeys.length); return denom?inter/denom:0; }\nlet best=null, bestScore=0;\nfor(const it of items){ const status=String(it.company_status||'').toLowerCase(); const type=String(it.company_type||'').toLowerCase(); if(status!=='active') continue; if(['ltd','llp'].indexOf(type)<0) continue; const sc=overlap(it.title); if(sc>=0.6&&sc>bestScore){ best=it; bestScore=sc; } }\nconst cfg=$('Parse config').first().json.config;\nlet extra;\nif(best){ extra={ matched:true, entity_check:String(best.company_type||'').toLowerCase(), company_number:best.company_number||'', route:'EMAIL', owner_name:'', ch_title:best.title||'', match_score:bestScore }; }\nelse{ extra={ matched:false, entity_check:'no_match', company_number:'', route:(cfg.routing.defaultRouteOnNoMatch||'DM'), owner_name:'', ch_title:'', match_score:0 }; }\nreturn { json:{ ...lead, ...extra } };"
+      },
+      "id": "mc",
+      "name": "Match company",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4080,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c_matched",
+              "leftValue": "={{ $json.matched }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cm",
+      "name": "Company matched?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        4320,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'https://api.company-information.service.gov.uk/company/' + $json.company_number + '/officers?items_per_page=35' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "cho",
+      "name": "CH officers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        4560,
+        192
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Companies House (lead engine)"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const m=$('Match company').item.json;\nconst resp=$json;\nconst items=(resp&&Array.isArray(resp.items))?resp.items:[];\nfunction titleCase(s){ return String(s||'').toLowerCase().replace(/\\b\\w/g,function(c){ return c.toUpperCase(); }); }\nlet owner='';\nfor(const it of items){\n  if(it.resigned_on) continue;\n  const role=String(it.officer_role||'').toLowerCase();\n  if(role!=='director'&&role!=='llp-member') continue;\n  const nm=String(it.name||'');\n  if(nm.indexOf(',')>=0){ const parts=nm.split(','); const sur=(parts[0]||'').trim(); const firsts=(parts[1]||'').trim().split(/\\s+/).filter(Boolean); const first=firsts[0]||''; owner=titleCase((first+' '+sur).trim()); }\n  else{ owner=titleCase(nm); }\n  if(owner) break;\n}\nreturn { json:{ ...m, owner_name:owner } };"
+      },
+      "id": "po",
+      "name": "Pick owner",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4800,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const row=$json;\nconst cfg=$('Parse config').first().json.config;\nconst patterns=(cfg.email&&Array.isArray(cfg.email.patterns))?cfg.email.patterns:[];\nfunction ascii(s){ return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z]/g,''); }\nlet domain='';\nif(row.websiteAlive&&row.website){ { const m=String(row.website).trim().match(/^(?:https?:\\/\\/)?([^\\/?#:]+)/i); domain=m?m[1].toLowerCase().replace(/^www\\./,''):''; } }\nlet candidates=[];\nif(row.owner_name&&domain){\n  const cleaned=String(row.owner_name).replace(/\\b(dr|mr|mrs|ms|miss|prof)\\b\\.?/gi,' ').trim().split(/\\s+/).filter(Boolean);\n  const first=ascii(cleaned[0]||''); const last=ascii(cleaned[cleaned.length-1]||''); const f=first.slice(0,1); const l=last.slice(0,1);\n  if(first&&last){ for(const p of patterns){ let e=String(p).replace('{first}',first).replace('{last}',last).replace('{f}',f).replace('{l}',l).replace('{domain}',domain); if(e.indexOf('{')>=0) continue; if(candidates.indexOf(e)<0) candidates.push(e); } }\n}\nlet email='', email_source='none_found';\nconst FREEMAIL=['gmail.com','outlook.com','hotmail.com','yahoo.com','yahoo.co.uk','icloud.com','btinternet.com','aol.com','live.com','live.co.uk','me.com','sky.com','mail.com'];\nconst rawScraped=Array.isArray(row.scrapedEmails)?row.scrapedEmails:[];\nconst scraped=rawScraped.filter(function(e){ const ed=String(e).split('@')[1]||''; return (domain&&(ed===domain||ed.endsWith('.'+domain)||domain.endsWith('.'+ed)))||FREEMAIL.indexOf(ed)>=0; });\nif(scraped.length){ email=scraped[0]; email_source='site_scrape'; }\nelse if(row.route==='EMAIL'&&row.owner_name&&domain&&candidates.length){ email=candidates[0]; email_source='ch_pattern_unverified'; }\nconst email_status='unverified';\nreturn { json:{ ...row, email, email_source, email_status, emailCandidatesList:candidates, domainUsed:domain } };"
+      },
+      "id": "ec",
+      "name": "Email candidates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const row=$json;\nconst q=String.fromCharCode(34);\nfunction ev(a){ if(!Array.isArray(a)||!a.length) return ''; return a.map(function(e){ return q+String(e.quote||'')+q+' ('+String(e.date||'')+')'; }).join(' | '); }\nlet sig={}; try{ sig=JSON.parse(row.signals||'{}'); }catch(e){ sig={}; }\nconst emailCandidates={ scrapedEmails:Array.isArray(row.scrapedEmails)?row.scrapedEmails:[], candidates:Array.isArray(row.emailCandidatesList)?row.emailCandidatesList:[], chosen:row.email||'', source:row.email_source||'none_found', verification:Array.isArray(row.emailVerification)?row.emailVerification:[] };\nconst mergedSignals=JSON.stringify({ ...sig, ...(row.facts||{}), websiteAlive:row.websiteAlive===true, socialLinks:Array.isArray(row.socialLinks)?row.socialLinks:[], emailCandidates });\nreturn { json:{ place_id:row.place_id, classification:row.classification, evidence:ev(row.evidence), signals:mergedSignals, entity_check:row.entity_check||'', company_number:row.company_number||'', route:row.route||'', owner_name:row.owner_name||'', email:row.email||'', email_status:row.email_status||'unverified', email_source:row.email_source||'none_found', status:'scored', scored_at:new Date().toISOString() } };"
+      },
+      "id": "ps",
+      "name": "Prep scored row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5520,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_LEADS_TABLE_ID"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "place_id",
+              "keyValue": "={{ $json.place_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "classification": "={{ $json.classification }}",
+            "evidence": "={{ $json.evidence }}",
+            "signals": "={{ $json.signals }}",
+            "entity_check": "={{ $json.entity_check }}",
+            "company_number": "={{ $json.company_number }}",
+            "route": "={{ $json.route }}",
+            "owner_name": "={{ $json.owner_name }}",
+            "email": "={{ $json.email }}",
+            "email_status": "={{ $json.email_status }}",
+            "email_source": "={{ $json.email_source }}",
+            "status": "={{ $json.status }}",
+            "scored_at": "={{ $json.scored_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "us",
+      "name": "Update lead (scored)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        5760,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const q=String.fromCharCode(34);\nfunction ev(a){ if(!Array.isArray(a)||!a.length) return ''; return a.map(function(e){ return q+String(e.quote||'')+q+' ('+String(e.date||'')+')'; }).join(' | '); }\nconst out=[];\nfor(const item of $input.all()){\n  const row=item.json;\n  let sig={}; try{ sig=JSON.parse(row.signals||'{}'); }catch(e){ sig={}; }\n  const emailCandidates={ scrapedEmails:Array.isArray(row.scrapedEmails)?row.scrapedEmails:[], candidates:[], chosen:'', source:'none_found' };\n  const mergedSignals=JSON.stringify({ ...sig, ...(row.facts||{}), emailCandidates });\n  out.push({ json:{ place_id:row.place_id, classification:row.classification, evidence:ev(row.evidence), signals:mergedSignals, entity_check:'skipped', company_number:'', route:'', owner_name:'', email:'', email_status:'', email_source:'', status:'scored', scored_at:new Date().toISOString() } });\n}\nreturn out;"
+      },
+      "id": "pd",
+      "name": "Prep discard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_LEADS_TABLE_ID"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "place_id",
+              "keyValue": "={{ $json.place_id }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "classification": "={{ $json.classification }}",
+            "evidence": "={{ $json.evidence }}",
+            "signals": "={{ $json.signals }}",
+            "entity_check": "={{ $json.entity_check }}",
+            "company_number": "={{ $json.company_number }}",
+            "route": "={{ $json.route }}",
+            "owner_name": "={{ $json.owner_name }}",
+            "email": "={{ $json.email }}",
+            "email_status": "={{ $json.email_status }}",
+            "email_source": "={{ $json.email_source }}",
+            "status": "={{ $json.status }}",
+            "scored_at": "={{ $json.scored_at }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "ud",
+      "name": "Update lead (discard)",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        3840,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1 · Config & batch\nManual trigger reads every `lead_engine_config` row and folds it into one config object. Read the full `leads` table (for the per-city review median) and the `status = raw` slice, then cap the working batch at `classifier.batchSize` (25).",
+        "height": 760,
+        "width": 1340,
+        "color": 4
+      },
+      "id": "s1",
+      "name": "Sticky 1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2 · Facts & presence\nPer lead: parse reviews + signals, count reviews inside the velocity window, compare against the city median to flag low review velocity.",
+        "height": 760,
+        "width": 300,
+        "color": 3
+      },
+      "id": "s2",
+      "name": "Sticky 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3 · Website + email scrape\nLeads with a website: fetch root + configured paths (15s timeout, continue on error), mark `websiteAlive` on a 2xx/3xx root, and harvest emails from mailto: links and text. Leads with no website skip through.",
+        "height": 760,
+        "width": 940,
+        "color": 5
+      },
+      "id": "s3",
+      "name": "Sticky 3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1648,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · LLM classifier\nBuild one Anthropic Messages request per lead (Haiku, three rubrics, strict-JSON verdict), call the API, then parse the verdict and enforce verbatim-quote evidence on HOT (downgrade to WARM if none survives).",
+        "height": 760,
+        "width": 700,
+        "color": 6
+      },
+      "id": "s4",
+      "name": "Sticky 4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2608,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 5 · Entity check, routing & discard\nHOT/WARM go to Companies House: search, token-overlap match on an active ltd/llp, then pull active directors/members for the owner name → route EMAIL. No match routes to the config default. DISCARD/ERROR skip straight to their row update.",
+        "height": 780,
+        "width": 1360,
+        "color": 2
+      },
+      "id": "s5",
+      "name": "Sticky 5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3344,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 6 · Email finalise + persist\nPick the best email (site scrape first, else CH-pattern candidate). Verification is live: MillionVerifier checks each candidate email (flag-gated by `verification.enabled`) and a confirmed match becomes the final `email`/`email_status`. Leads with no candidates, a DM route, or verification disabled bypass the API call and keep their originally chosen email untouched. The full scored verdict is then written back to the `leads` row.",
+        "height": 760,
+        "width": 1020,
+        "color": 7
+      },
+      "id": "s6",
+      "name": "Sticky 6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        4992,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const cfgItem = $('Parse config').first();\nconst cfg = (cfgItem && cfgItem.json && cfgItem.json.config) ? cfgItem.json.config : {};\nconst verifyEnabled = !!(cfg.verification && cfg.verification.enabled === true);\nconst out = [];\nfor (const item of $input.all()) {\n  const row = item.json;\n  const scraped = Array.isArray(row.scrapedEmails) ? row.scrapedEmails.filter(Boolean) : [];\n  const patterns = Array.isArray(row.emailCandidatesList) ? row.emailCandidatesList.filter(Boolean) : [];\n  const seen = new Set();\n  const ordered = [];\n  for (const e of scraped) { const key = String(e).trim().toLowerCase(); if (key && !seen.has(key)) { seen.add(key); ordered.push({ email: e, source: 'site_scrape' }); } }\n  for (const e of patterns) { const key = String(e).trim().toLowerCase(); if (key && !seen.has(key)) { seen.add(key); ordered.push({ email: e, source: 'ch_pattern' }); } }\n  const capped = ordered.slice(0, 5);\n  const shouldVerify = verifyEnabled && capped.length > 0;\n  if (shouldVerify) {\n    capped.forEach(function(c, idx) { out.push({ json: { _verify: true, place_id: row.place_id, candidateEmail: c.email, candidateSource: c.source, candidateIndex: idx, _lead: row } }); });\n  } else {\n    out.push({ json: { _verify: false, ...row } });\n  }\n}\nreturn out;"
+      },
+      "id": "b0aa6730-3ed5-41d5-9f39-4e357653f202",
+      "name": "Expand verify targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5280,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c_verify",
+              "leftValue": "={{ $json._verify }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "979b0d1d-d84a-40e3-9761-1e681c6c6d5a",
+      "name": "Needs verification?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        5504,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.millionverifier.com/api/v3/",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "email",
+              "value": "={{ $json.candidateEmail }}"
+            },
+            {
+              "name": "timeout",
+              "value": "10"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "id": "98e9e261-a540-47fb-87c9-47a2efc89648",
+      "name": "MillionVerifier check",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        5504,
+        128
+      ],
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "MillionVerifier (lead engine)"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const targets = $('Expand verify targets').all().filter(function(t){ return t.json && t.json._verify === true; });\nconst results = $input.all();\nconst groups = new Map();\nfor (let i = 0; i < targets.length; i++) {\n  const t = targets[i].json;\n  const r = (results[i] && results[i].json) ? results[i].json : {};\n  const placeId = t.place_id;\n  if (!groups.has(placeId)) groups.set(placeId, { lead: t._lead || {}, verdicts: [] });\n  let result = r.result || (r.error ? 'error' : '');\n  if (!result) result = 'error';\n  if (r.email && String(r.email).trim().toLowerCase() !== String(t.candidateEmail).trim().toLowerCase()) { result = 'error'; }\n  groups.get(placeId).verdicts.push({ email: t.candidateEmail, source: t.candidateSource, index: t.candidateIndex, quality: r.quality || null, result });\n}\nconst out = [];\nfor (const group of groups.values()) {\n  const lead = group.lead;\n  const verdicts = group.verdicts.slice().sort(function(a, b) { return a.index - b.index; });\n  const okMatch = verdicts.find(function(v) { return v.result === 'ok'; });\n  let email = lead.email || '';\n  let email_source = lead.email_source || 'none_found';\n  let email_status;\n  if (okMatch) {\n    email = okMatch.email;\n    email_status = 'ok';\n    email_source = okMatch.source === 'ch_pattern' ? 'ch_pattern_verified' : okMatch.source;\n  } else {\n    const chosenLower = String(lead.email || '').trim().toLowerCase();\n    const chosenVerdict = verdicts.find(function(v) { return String(v.email).trim().toLowerCase() === chosenLower; }) || verdicts[0];\n    let status = chosenVerdict ? chosenVerdict.result : 'verify_error';\n    if (status === 'disposable') status = 'invalid';\n    if (status === 'error' || !status) status = 'verify_error';\n    email_status = status;\n  }\n  out.push({ json: { ...lead, email, email_status, email_source, emailVerification: verdicts, _verify: true } });\n}\nreturn out;"
+      },
+      "id": "545209be-3c4b-4b1c-8bc4-b543c8a472d0",
+      "name": "Pick verified email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5728,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "YOUR-WEBHOOK-PATH",
+        "options": {}
+      },
+      "id": "aaa8baf5-adc8-4155-be36-cef725bde2a0",
+      "name": "Webhook (batch runner)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        304
+      ],
+      "webhookId": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read config": {
+      "main": [
+        [
+          {
+            "node": "Parse config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse config": {
+      "main": [
+        [
+          {
+            "node": "Read all leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read all leads": {
+      "main": [
+        [
+          {
+            "node": "Read raw leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read raw leads": {
+      "main": [
+        [
+          {
+            "node": "Cap batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cap batch": {
+      "main": [
+        [
+          {
+            "node": "Compute facts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute facts": {
+      "main": [
+        [
+          {
+            "node": "Has website?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has website?": {
+      "main": [
+        [
+          {
+            "node": "Expand fetch targets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No website defaults",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand fetch targets": {
+      "main": [
+        [
+          {
+            "node": "Fetch site pages",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch site pages": {
+      "main": [
+        [
+          {
+            "node": "Aggregate site data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate site data": {
+      "main": [
+        [
+          {
+            "node": "Build classifier request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No website defaults": {
+      "main": [
+        [
+          {
+            "node": "Build classifier request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build classifier request": {
+      "main": [
+        [
+          {
+            "node": "Classify (Anthropic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify (Anthropic)": {
+      "main": [
+        [
+          {
+            "node": "Parse verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse verdict": {
+      "main": [
+        [
+          {
+            "node": "HOT or WARM?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HOT or WARM?": {
+      "main": [
+        [
+          {
+            "node": "HW leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep discard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HW leads": {
+      "main": [
+        [
+          {
+            "node": "CH search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CH search": {
+      "main": [
+        [
+          {
+            "node": "Match company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match company": {
+      "main": [
+        [
+          {
+            "node": "Company matched?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Company matched?": {
+      "main": [
+        [
+          {
+            "node": "CH officers",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CH officers": {
+      "main": [
+        [
+          {
+            "node": "Pick owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick owner": {
+      "main": [
+        [
+          {
+            "node": "Email candidates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep scored row": {
+      "main": [
+        [
+          {
+            "node": "Update lead (scored)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prep discard": {
+      "main": [
+        [
+          {
+            "node": "Update lead (discard)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email candidates": {
+      "main": [
+        [
+          {
+            "node": "Expand verify targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand verify targets": {
+      "main": [
+        [
+          {
+            "node": "Needs verification?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs verification?": {
+      "main": [
+        [
+          {
+            "node": "MillionVerifier check",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prep scored row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MillionVerifier check": {
+      "main": [
+        [
+          {
+            "node": "Pick verified email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick verified email": {
+      "main": [
+        [
+          {
+            "node": "Prep scored row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook (batch runner)": {
+      "main": [
+        [
+          {
+            "node": "Read config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": []
+}

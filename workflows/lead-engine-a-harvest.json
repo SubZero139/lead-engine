@@ -1,0 +1,588 @@
+{
+  "name": "Lead Engine A — Harvest",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual_trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_CONFIG_TABLE_ID"
+        },
+        "returnAll": true
+      },
+      "id": "read_config",
+      "name": "Read config",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().map(i => i.json);\nconst cfg = {};\nfor (const r of rows) { cfg[r.key] = r.value; }\nfunction toArray(v) {\n  try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch (e) { return []; }\n}\nconst cities = toArray(cfg['geography.uk.cities']);\nconst cursor = parseInt(cfg['harvest.cityCursor'] || '0', 10) || 0;\nif (!cities.length) { throw new Error('No cities configured in geography.uk.cities'); }\nconst cityIndex = cursor % cities.length;\nconst nextCursor = (cityIndex + 1) % cities.length;\nconst config = {\n  actorId: cfg['harvest.actorId'] || 'compass/crawler-google-places',\n  searchTerms: toArray(cfg['niche.searchTerms']),\n  excludeNamePatterns: toArray(cfg['niche.excludeNamePatterns']),\n  cities,\n  maxPlacesPerCity: parseInt(cfg['harvest.maxPlacesPerCity'] || '40', 10) || 40,\n  maxReviewsPerPlace: parseInt(cfg['harvest.maxReviewsPerPlace'] || '20', 10) || 20,\n};\nreturn [{ json: { config, city: cities[cityIndex], cityIndex, nextCursor } }];"
+      },
+      "id": "parse_config",
+      "name": "Parse config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.apify.com/v2/acts/{{ $json.config.actorId.replace('/', '~') }}/runs",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ searchStringsArray: $json.config.searchTerms, locationQuery: $json.city + ', United Kingdom', maxCrawledPlaces: $json.config.maxPlacesPerCity, maxCrawledPlacesPerSearch: Math.max(1, Math.ceil($json.config.maxPlacesPerCity / Math.max(1, $json.config.searchTerms.length))), language: 'en', maxReviews: $json.config.maxReviewsPerPlace, reviewsSort: 'newest', scrapeReviewsPersonalData: false }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "start_apify_run",
+      "name": "Start Apify run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        320
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Apify (lead engine)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 20
+      },
+      "id": "wait_20s",
+      "name": "Wait 20s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        944,
+        320
+      ],
+      "webhookId": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/actor-runs/{{ $('Start Apify run').item.json.data.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "poll_run_status",
+      "name": "Poll run status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1168,
+        320
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Apify (lead engine)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond_succeeded",
+              "leftValue": "={{ $json.data.status }}",
+              "rightValue": "SUCCEEDED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "run_succeeded",
+      "name": "Run succeeded?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1392,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond_running",
+              "leftValue": "={{ $json.data.status }}",
+              "rightValue": "RUNNING",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "cond_ready",
+              "leftValue": "={{ $json.data.status }}",
+              "rightValue": "READY",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "still_running",
+      "name": "Still running?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1168,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "errorMessage": "=Apify run did not succeed. Status: {{ $json.data.status }}"
+      },
+      "id": "stop_error",
+      "name": "Stop and Error",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1392,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $('Start Apify run').item.json.data.defaultDatasetId }}/items?clean=true&format=json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "fetch_dataset",
+      "name": "Fetch dataset",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1648,
+        208
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Apify (lead engine)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const parsed = $('Parse config').first().json;\nconst cfg = parsed.config;\nconst city = parsed.city;\nconst excludes = (cfg.excludeNamePatterns || []).map(p => String(p).toLowerCase());\n\nlet places = [];\nfor (const item of $input.all()) {\n  const j = item.json;\n  if (Array.isArray(j)) places.push(...j);\n  else if (j && Array.isArray(j.data)) places.push(...j.data);\n  else places.push(j);\n}\n\nconst out = [];\nfor (const p of places) {\n  if (!p || typeof p !== 'object') continue;\n  if (p.permanentlyClosed === true || p.temporarilyClosed === true) continue;\n  if (!p.placeId) continue;\n  const title = String(p.title || '');\n  const lowerTitle = title.toLowerCase();\n  if (excludes.some(x => x && lowerTitle.includes(x))) continue;\n\n  const reviews = Array.isArray(p.reviews) ? p.reviews : [];\n  let latest = '';\n  for (const r of reviews) {\n    const d = (r && r.publishedAtDate) ? r.publishedAtDate : '';\n    if (d && d > latest) latest = d;\n  }\n\n  const mapped = reviews\n    .filter(r => r && r.text && String(r.text).trim() !== '')\n    .map(r => ({\n      text: r.text,\n      date: r.publishedAtDate || '',\n      stars: (r.stars != null) ? r.stars : null,\n      ownerResponse: r.responseFromOwnerText || null,\n      ownerResponseDate: r.responseFromOwnerDate || null,\n    }));\n\n  let trimmed = mapped.slice();\n  let reviewsJson = JSON.stringify(trimmed);\n  while (reviewsJson.length > 30000 && trimmed.length > 0) {\n    trimmed.pop();\n    reviewsJson = JSON.stringify(trimmed);\n  }\n\n  let hasHours = false;\n  if (p.openingHours) {\n    hasHours = Array.isArray(p.openingHours) ? p.openingHours.length > 0 : Object.keys(p.openingHours).length > 0;\n  }\n  const signals = {\n    bookingLinks: Array.isArray(p.bookingLinks) ? p.bookingLinks : [],\n    claimed: !p.claimThisBusiness,\n    imagesCount: (p.imagesCount != null) ? p.imagesCount : 0,\n    hasHours: hasHours,\n  };\n\n  out.push({ json: {\n    place_id: p.placeId,\n    name: title,\n    city: city,\n    country: p.countryCode || 'GB',\n    address: p.address || '',\n    phone: p.phone || p.phoneUnformatted || '',\n    website: p.website || '',\n    gmaps_url: p.url || '',\n    review_count: p.reviewsCount || 0,\n    rating: p.totalScore || 0,\n    latest_review_date: latest,\n    reviews_json: reviewsJson,\n    status: 'raw',\n    classification: '',\n    evidence: '',\n    signals: JSON.stringify(signals),\n    entity_check: '',\n    company_number: '',\n    route: '',\n    owner_name: '',\n    email: '',\n    email_status: '',\n    email_source: '',\n    harvested_at: new Date().toISOString(),\n    scored_at: '',\n  }});\n}\n\nreturn out;"
+      },
+      "id": "map_filter",
+      "name": "Map + filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1872,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_LEADS_TABLE_ID"
+        },
+        "returnAll": true
+      },
+      "id": "read_existing_leads",
+      "name": "Read existing leads",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2080,
+        208
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const existingRows = $('Read existing leads').all();\nconst seen = new Set();\nfor (const r of existingRows) {\n  const pid = r.json && r.json.place_id;\n  if (pid) seen.add(String(pid));\n}\nconst localSeen = new Set();\nconst out = [];\nfor (const item of $('Map + filter').all()) {\n  const pid = item.json.place_id;\n  if (!pid) continue;\n  const key = String(pid);\n  if (seen.has(key)) continue;\n  if (localSeen.has(key)) continue;\n  localSeen.add(key);\n  out.push({ json: item.json });\n}\nreturn out;"
+      },
+      "id": "dedupe",
+      "name": "Dedupe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2304,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_LEADS_TABLE_ID"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "place_id": "={{ $json.place_id }}",
+            "name": "={{ $json.name }}",
+            "city": "={{ $json.city }}",
+            "country": "={{ $json.country }}",
+            "address": "={{ $json.address }}",
+            "phone": "={{ $json.phone }}",
+            "website": "={{ $json.website }}",
+            "gmaps_url": "={{ $json.gmaps_url }}",
+            "review_count": "={{ $json.review_count }}",
+            "rating": "={{ $json.rating }}",
+            "latest_review_date": "={{ $json.latest_review_date }}",
+            "reviews_json": "={{ $json.reviews_json }}",
+            "status": "={{ $json.status }}",
+            "classification": "={{ $json.classification }}",
+            "evidence": "={{ $json.evidence }}",
+            "signals": "={{ $json.signals }}",
+            "entity_check": "={{ $json.entity_check }}",
+            "company_number": "={{ $json.company_number }}",
+            "route": "={{ $json.route }}",
+            "harvested_at": "={{ $json.harvested_at }}",
+            "scored_at": "={{ $json.scored_at }}",
+            "owner_name": "={{ $json.owner_name }}",
+            "email": "={{ $json.email }}",
+            "email_status": "={{ $json.email_status }}",
+            "email_source": "={{ $json.email_source }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "insert_leads",
+      "name": "Insert leads",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2528,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "dataTableId": {
+          "mode": "id",
+          "value": "YOUR_CONFIG_TABLE_ID"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "key",
+              "keyValue": "harvest.cityCursor"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "value": "={{ String($('Parse config').first().json.nextCursor) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "update_cursor",
+      "name": "Update cityCursor",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1696,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1 · Config\nRead every row from `lead_engine_config`, fold into one config object, and pick this run's city via `cityCursor % cities.length`.",
+        "height": 300,
+        "width": 480,
+        "color": 4
+      },
+      "id": "sticky_1",
+      "name": "Sticky Config",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        160,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2 · Apify harvest + poll loop\nStart the Google Places actor, then poll the run every 20s. RUNNING/READY loops back to Wait; SUCCEEDED continues; anything else stops with an error. runId + datasetId are read back via `$('Start Apify run')`.",
+        "height": 520,
+        "width": 900,
+        "color": 5
+      },
+      "id": "sticky_2",
+      "name": "Sticky Harvest",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        672,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3 · Map / filter / dedupe / store\nMap places to lead rows, drop closed or name-excluded listings, cap `reviews_json` at 30k chars, drop `place_id`s already in `leads`, then insert the rest.",
+        "height": 320,
+        "width": 1120,
+        "color": 3
+      },
+      "id": "sticky_3",
+      "name": "Sticky Map",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4 · Advance cursor\nOn a successful run, move `harvest.cityCursor` to the next city for the following run.",
+        "height": 200,
+        "width": 340,
+        "color": 6
+      },
+      "id": "sticky_4",
+      "name": "Sticky Cursor",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        432
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read config": {
+      "main": [
+        [
+          {
+            "node": "Parse config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse config": {
+      "main": [
+        [
+          {
+            "node": "Start Apify run",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Apify run": {
+      "main": [
+        [
+          {
+            "node": "Wait 20s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 20s": {
+      "main": [
+        [
+          {
+            "node": "Poll run status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll run status": {
+      "main": [
+        [
+          {
+            "node": "Run succeeded?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run succeeded?": {
+      "main": [
+        [
+          {
+            "node": "Fetch dataset",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update cityCursor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Still running?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still running?": {
+      "main": [
+        [
+          {
+            "node": "Wait 20s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch dataset": {
+      "main": [
+        [
+          {
+            "node": "Map + filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map + filter": {
+      "main": [
+        [
+          {
+            "node": "Read existing leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read existing leads": {
+      "main": [
+        [
+          {
+            "node": "Dedupe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe": {
+      "main": [
+        [
+          {
+            "node": "Insert leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": [],
+  "tags": []
+}
